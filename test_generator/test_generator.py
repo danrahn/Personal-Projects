@@ -4,10 +4,11 @@ import re
 import os
 import sys
 import tkinter as tk
-import openpyxl
 import PySimpleGUI as sg
 from docx import Document
-from docx.shared import Inches
+
+from simple_xlsx import load_workbook
+from simple_xlsx import CellHelpers
 
 
 def set_icon(app):
@@ -55,13 +56,12 @@ path = os.path.join(os.path.abspath('test_bank.xlsx'))
 image_path = os.path.join(os.path.abspath('Images'))
 image_regex = re.compile(r'\(Ch_[0-9]+_[0-9]+\)')
 
-
 def main():
     class MyTestGenerator:
-        wb_obj = openpyxl.load_workbook(path)
+        wb_obj = load_workbook(path)
         sheet_obj = wb_obj.active
-        max_col = sheet_obj.max_column
-        max_row = sheet_obj.max_row
+        max_col = sheet_obj.dim['col_last']
+        max_row = sheet_obj.dim['rw_last']
 
         def __init__(self):
             self.unique_unit_list = []
@@ -73,29 +73,32 @@ def main():
 
         def create_random_test(self, current_unit, current_unit_num_questions, previous_unit_num_questions, num_of_answer_choices):
             # Create unique value lists based off user selection (current unit & number of questions)
-            for row in range(2, self.max_row + 1):
-                if self.sheet_obj.cell(row=row, column=3).value != current_unit:
-                    self.previous_units.append(self.sheet_obj.cell(row=row, column=1).value)
+            # we only have one column, grab the first and only one
+            for cell in self.sheet_obj.get_range('C2:C' + str(self.max_row)):
+                uniq_id = int(self.sheet_obj.cell(cell.rw, col=1).value.plain_text()) # Units are numbers. Strip formatting and convert to int
+                if cell.value.plain_text() != current_unit:
+                    self.previous_units.append(uniq_id)
                 else:
-                    self.current_unit_list.append(self.sheet_obj.cell(row=row, column=1).value)
+                    self.current_unit_list.append(uniq_id)
 
             current_unit_unique_id = random.sample(self.current_unit_list, int(current_unit_num_questions))
             previous_unit_unique_id = random.sample(self.previous_units, int(previous_unit_num_questions))
             all_questions_unique_id = previous_unit_unique_id + current_unit_unique_id
 
             # Create dictionary of questions and answer choices from both unique lists
-            for row in range(2, self.max_row + 1):
+            for cell in self.sheet_obj.get_range('A2:A' + str(self.max_row)):
                 answer_choices = []
-                if self.sheet_obj.cell(row=row, column=1).value in all_questions_unique_id:
-                    question = self.sheet_obj.cell(row=row, column=4).value
+                if int(self.sheet_obj.cell(cell.rw, col=1).value.plain_text()) not in all_questions_unique_id:
+                    continue
 
-                    for occurrence in [' I.', ' II.', ' III.', ' IV.']:
-                        question = question.replace(occurrence, '\n' + occurrence)
+                question = self.sheet_obj.cell(cell.rw, col=4).value
+                for occurrence in [' I.', ' II.', ' III,', ' IV.']:
+                    question.replace(occurrence, '\n' + occurrence)
 
-                    for column in range(num_of_answer_choices):
-                        answer = self.sheet_obj.cell(row=row, column=column + 5).value
-                        answer_choices.append(answer)
-                    self.questions_and_answers.update({question: answer_choices})
+                answer_choice_range = CellHelpers.build_range(cell.rw, cell.rw, 5, 5 + num_of_answer_choices - 1)
+                answer_choices = [answer.value for answer in self.sheet_obj.get_range(answer_choice_range)]
+
+                self.questions_and_answers.update({question: answer_choices})
 
         def write_test(self, filename, num_of_answer_keys, num_of_answer_choices):
             for answer_key in num_of_answer_keys:
@@ -106,8 +109,7 @@ def main():
 
                 # Randomly write both test questions and answers from dictionary
                 for count, (question, answer_choices) in enumerate(sorted(self.questions_and_answers.items(), key=lambda x: random.random())):
-                    question = f'{question}'
-                    mo = image_regex.search(question)
+                    mo = image_regex.search(question.plain_text())
                     shuffled = answer_choices
                     self.not_shuffled_answer_choices.append(answer_choices[0])
                     random.shuffle(answer_choices)
@@ -118,18 +120,20 @@ def main():
                         string_regex = string_regex.replace(')', '')
                         string_regex = f'{string_regex}.png'
                         doc.add_picture(f'{image_path}\\{string_regex}', width=Inches(4.0))
-                        paragraph = doc.add_paragraph(
-                            f'{question.replace(mo.group(), "(Use the above figure to help with this question)")}\n')
-                    else:
-                        paragraph = doc.add_paragraph(f'{question}\n')
+                        question.replace(mo.group(), "(Use the above figure to help with this question)")
+
+                    paragraph = doc.add_paragraph()
+                    question.add_to_paragraph(paragraph)
+                    paragraph.add_run('\n')
                     paragraph.style = 'List Number'
 
                     # Randomly write answer choices for each question & create question/answer dictionary
                     for choice, answer in enumerate(num_of_answer_choices):
                         if shuffled[choice] == self.not_shuffled_answer_choices[count]:
                             self.test_key.update({count + 1: answer})
-                        paragraph_answers = f'\t{answer}) {shuffled[choice]}\n'
-                        paragraph.add_run(paragraph_answers)
+                        paragraph.add_run(f'\t{answer}) ')
+                        shuffled[choice].add_to_paragraph(paragraph)
+                        paragraph.add_run('\n')
 
                 doc.add_paragraph('\nAnswer Key\n\n')
                 for question, answer_choices in self.test_key.items():
@@ -141,7 +145,7 @@ def main():
         # Creates list for user to select the current unit
         def create_unique_unit_list(self):
             for row in range(2, self.max_row):
-                unit = self.sheet_obj.cell(row=row, column=3).value
+                unit = self.sheet_obj.cell(rw=row, col=3).value.plain_text()
                 self.unique_unit_list.append(unit)
             self.unique_unit_list = list(dict.fromkeys(self.unique_unit_list))
             return self.unique_unit_list
@@ -157,10 +161,10 @@ def main():
         [sg.Text('Random Test Generator', font=('Helvatica', 20), text_color='MidnightBlue')],
         [sg.Text('Select Current Unit'), sg.Listbox(values=p.create_unique_unit_list(), size=(30, 5))],
         [sg.Text('How many questions from the current unit?'),
-         sg.Slider(range=(1, 100), orientation='h', size=(34, 20), default_value=10)],
+         sg.Slider(range=(1, 100), orientation='h', size=(34, 20), default_value=8)],
         [sg.Text('How many questions from the previous unit?'),
          sg.Slider(range=(1, 100), orientation='h', size=(34, 20), default_value=15)],
-        [sg.Text('Name of your test: '), sg.InputText()],
+        [sg.Text('Name of your test: '), sg.InputText("TEST")],
         [sg.Text('Number of keys: '), sg.Spin(values=(1, 2, 3, 4), initial_value=1), sg.Text('Number of answer options'),
          sg.Spin(values=(3, 4, 5), initial_value=5)],
         [sg.Button('Create Test'), sg.Quit()]
